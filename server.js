@@ -12,6 +12,9 @@ const PORT = process.env.PORT || 3000;
 const DB_FILE = path.join(__dirname, 'lottery.db');
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
+// Trust proxy for Render (reverse proxy)
+app.set('trust proxy', 1);
+
 let db = null;
 
 // ==================== SECURITY MIDDLEWARE ====================
