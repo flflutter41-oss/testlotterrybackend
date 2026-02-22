@@ -1,21 +1,66 @@
 const express = require('express');
-const initSqlJs = require('sql.js');
+const mongoose = require('mongoose');
 const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DB_FILE = path.join(__dirname, 'lottery.db');
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/lottery';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
 // Trust proxy for Render (reverse proxy)
 app.set('trust proxy', 1);
 
-let db = null;
+// ==================== MONGODB SCHEMAS ====================
+const userSchema = new mongoose.Schema({
+    username: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    createdAt: { type: Date, default: Date.now }
+});
+
+const settingsSchema = new mongoose.Schema({
+    key: { type: String, default: 'main', unique: true },
+    alertThreshold: { type: Number, default: 80 },
+    defaultLimit2Digit: { type: Number, default: 5000 },
+    defaultLimit3DigitTode: { type: Number, default: 3000 },
+    defaultLimit3DigitTeng: { type: Number, default: 2000 }
+});
+
+const limit2DigitSchema = new mongoose.Schema({
+    number: { type: String, required: true, unique: true },
+    limit: { type: Number, default: 5000 },
+    amount: { type: Number, default: 0 }
+});
+
+const limit3DigitTodeSchema = new mongoose.Schema({
+    number: { type: String, required: true, unique: true },
+    limit: { type: Number, default: 3000 },
+    amount: { type: Number, default: 0 }
+});
+
+const limit3DigitTengSchema = new mongoose.Schema({
+    number: { type: String, required: true, unique: true },
+    limit: { type: Number, default: 2000 },
+    amount: { type: Number, default: 0 }
+});
+
+const transactionSchema = new mongoose.Schema({
+    date: { type: String, required: true },
+    type: { type: String, required: true },
+    number: { type: String, required: true },
+    amount: { type: Number, required: true },
+    totalAmount: { type: Number, required: true },
+    limit: { type: Number, required: true }
+});
+
+const User = mongoose.model('User', userSchema);
+const Settings = mongoose.model('Settings', settingsSchema);
+const Limit2Digit = mongoose.model('Limit2Digit', limit2DigitSchema);
+const Limit3DigitTode = mongoose.model('Limit3DigitTode', limit3DigitTodeSchema);
+const Limit3DigitTeng = mongoose.model('Limit3DigitTeng', limit3DigitTengSchema);
+const Transaction = mongoose.model('Transaction', transactionSchema);
 
 // ==================== SECURITY MIDDLEWARE ====================
 app.use(helmet({
@@ -57,450 +102,474 @@ app.use('/api/login', loginLimiter);
 
 app.use(express.json({ limit: '10kb' }));
 
-// ==================== DATABASE FUNCTIONS ====================
-function saveDB() {
-    if (db) {
-        const data = db.export();
-        const buffer = Buffer.from(data);
-        fs.writeFileSync(DB_FILE, buffer);
-    }
-}
-
+// ==================== DATABASE INITIALIZATION ====================
 async function initDatabase() {
-    const SQL = await initSqlJs();
-    
-    if (fs.existsSync(DB_FILE)) {
-        const fileBuffer = fs.readFileSync(DB_FILE);
-        db = new SQL.Database(fileBuffer);
-        console.log('Loaded existing database');
-    } else {
-        db = new SQL.Database();
-        console.log('Created new database');
-    }
-    
-    // Create tables
-    db.run(`
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    `);
-    
-    db.run(`
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            alert_threshold INTEGER DEFAULT 80,
-            default_limit_2digit INTEGER DEFAULT 5000,
-            default_limit_3digit_tode INTEGER DEFAULT 3000,
-            default_limit_3digit_teng INTEGER DEFAULT 2000
-        )
-    `);
-    
-    db.run(`
-        CREATE TABLE IF NOT EXISTS limits_2digit (
-            number TEXT PRIMARY KEY,
-            limit_amount INTEGER DEFAULT 5000,
-            amount INTEGER DEFAULT 0
-        )
-    `);
-    
-    db.run(`
-        CREATE TABLE IF NOT EXISTS limits_3digit_tode (
-            number TEXT PRIMARY KEY,
-            limit_amount INTEGER DEFAULT 3000,
-            amount INTEGER DEFAULT 0
-        )
-    `);
-    
-    db.run(`
-        CREATE TABLE IF NOT EXISTS limits_3digit_teng (
-            number TEXT PRIMARY KEY,
-            limit_amount INTEGER DEFAULT 2000,
-            amount INTEGER DEFAULT 0
-        )
-    `);
-    
-    db.run(`
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            type TEXT NOT NULL,
-            number TEXT NOT NULL,
-            amount REAL NOT NULL,
-            total_amount REAL NOT NULL,
-            limit_amount REAL NOT NULL
-        )
-    `);
+    try {
+        await mongoose.connect(MONGODB_URI);
+        console.log('Connected to MongoDB');
 
-    // Setup default data
-    const userCount = db.exec('SELECT COUNT(*) as cnt FROM users')[0]?.values[0][0] || 0;
-    if (userCount === 0) {
-        db.run('INSERT INTO users (username, password, created_at) VALUES (?, ?, ?)', ['admin', 'admin123', new Date().toISOString()]);
-    }
-
-    const settingsCount = db.exec('SELECT COUNT(*) as cnt FROM settings')[0]?.values[0][0] || 0;
-    if (settingsCount === 0) {
-        db.run('INSERT INTO settings (key, alert_threshold, default_limit_2digit, default_limit_3digit_tode, default_limit_3digit_teng) VALUES (?, ?, ?, ?, ?)', ['main', 80, 5000, 3000, 2000]);
-    }
-
-    const limit2Count = db.exec('SELECT COUNT(*) as cnt FROM limits_2digit')[0]?.values[0][0] || 0;
-    if (limit2Count === 0) {
-        for (let i = 0; i <= 99; i++) {
-            const num = i.toString().padStart(2, '0');
-            db.run('INSERT INTO limits_2digit (number, limit_amount, amount) VALUES (?, ?, ?)', [num, 5000, 0]);
+        // Create default admin user if not exists
+        const userCount = await User.countDocuments();
+        if (userCount === 0) {
+            await User.create({ username: 'admin', password: 'admin123' });
+            console.log('Created default admin user');
         }
-    }
 
-    saveDB();
-    console.log('Database initialized');
+        // Create default settings if not exists
+        const settingsCount = await Settings.countDocuments();
+        if (settingsCount === 0) {
+            await Settings.create({ key: 'main' });
+            console.log('Created default settings');
+        }
+
+        // Create default 2-digit limits if not exists
+        const limit2Count = await Limit2Digit.countDocuments();
+        if (limit2Count === 0) {
+            const limits = [];
+            for (let i = 0; i <= 99; i++) {
+                const num = i.toString().padStart(2, '0');
+                limits.push({ number: num, limit: 5000, amount: 0 });
+            }
+            await Limit2Digit.insertMany(limits);
+            console.log('Created default 2-digit limits');
+        }
+
+        console.log('Database initialized');
+    } catch (err) {
+        console.error('MongoDB connection error:', err);
+        process.exit(1);
+    }
 }
 
 // ==================== HEALTH CHECK ====================
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'OK', timestamp: new Date().toISOString() });
+    res.json({ status: 'OK', timestamp: new Date().toISOString(), db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
 });
 
 // ==================== AUTH API ====================
-app.post('/api/login', (req, res) => {
-    const { username, password } = req.body;
-    const result = db.exec('SELECT * FROM users WHERE username = ? AND password = ?', [username, password]);
-    if (result.length > 0 && result[0].values.length > 0) {
-        res.json({ success: true, user: { username: result[0].values[0][0] } });
-    } else {
-        res.json({ success: false, message: 'Invalid credentials' });
+app.post('/api/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        const user = await User.findOne({ username, password });
+        if (user) {
+            res.json({ success: true, user: { username: user.username } });
+        } else {
+            res.json({ success: false, message: 'Invalid credentials' });
+        }
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
-app.get('/api/users', (req, res) => {
-    const result = db.exec('SELECT username, created_at FROM users ORDER BY created_at');
-    const users = result.length > 0 ? result[0].values.map(row => ({ username: row[0], createdAt: row[1] })) : [];
-    res.json(users);
+app.get('/api/users', async (req, res) => {
+    try {
+        const users = await User.find().select('username createdAt').sort('createdAt');
+        res.json(users.map(u => ({ username: u.username, createdAt: u.createdAt })));
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
-app.post('/api/users', (req, res) => {
-    const { username, password } = req.body;
+app.post('/api/users', async (req, res) => {
     try {
-        db.run('INSERT INTO users (username, password, created_at) VALUES (?, ?, ?)', [username, password, new Date().toISOString()]);
-        saveDB();
+        const { username, password } = req.body;
+        await User.create({ username, password });
         res.json({ success: true });
-    } catch (e) {
+    } catch (err) {
         res.json({ success: false, message: 'User already exists' });
     }
 });
 
-app.put('/api/users/:username', (req, res) => {
-    const { password } = req.body;
-    db.run('UPDATE users SET password = ? WHERE username = ?', [password, req.params.username]);
-    saveDB();
-    res.json({ success: true });
+app.put('/api/users/:username', async (req, res) => {
+    try {
+        const { password } = req.body;
+        await User.updateOne({ username: req.params.username }, { password });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
-app.delete('/api/users/:username', (req, res) => {
-    db.run('DELETE FROM users WHERE username = ?', [req.params.username]);
-    saveDB();
-    res.json({ success: true });
+app.delete('/api/users/:username', async (req, res) => {
+    try {
+        await User.deleteOne({ username: req.params.username });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
 // ==================== SETTINGS API ====================
-app.get('/api/settings', (req, res) => {
-    const result = db.exec('SELECT * FROM settings WHERE key = ?', ['main']);
-    if (result.length > 0 && result[0].values.length > 0) {
-        const row = result[0].values[0];
-        res.json({
-            alertThreshold: row[1],
-            defaultLimit2Digit: row[2],
-            defaultLimit3DigitTode: row[3],
-            defaultLimit3DigitTeng: row[4]
-        });
-    } else {
-        res.json({
-            alertThreshold: 80,
-            defaultLimit2Digit: 5000,
-            defaultLimit3DigitTode: 3000,
-            defaultLimit3DigitTeng: 2000
-        });
+app.get('/api/settings', async (req, res) => {
+    try {
+        const settings = await Settings.findOne({ key: 'main' });
+        if (settings) {
+            res.json({
+                alertThreshold: settings.alertThreshold,
+                defaultLimit2Digit: settings.defaultLimit2Digit,
+                defaultLimit3DigitTode: settings.defaultLimit3DigitTode,
+                defaultLimit3DigitTeng: settings.defaultLimit3DigitTeng
+            });
+        } else {
+            res.json({
+                alertThreshold: 80,
+                defaultLimit2Digit: 5000,
+                defaultLimit3DigitTode: 3000,
+                defaultLimit3DigitTeng: 2000
+            });
+        }
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
-app.put('/api/settings', (req, res) => {
-    const { alertThreshold, defaultLimit2Digit, defaultLimit3DigitTode, defaultLimit3DigitTeng } = req.body;
-    db.run('UPDATE settings SET alert_threshold = ?, default_limit_2digit = ?, default_limit_3digit_tode = ?, default_limit_3digit_teng = ? WHERE key = ?', 
-        [alertThreshold, defaultLimit2Digit, defaultLimit3DigitTode, defaultLimit3DigitTeng, 'main']);
-    saveDB();
-    res.json({ success: true });
+app.put('/api/settings', async (req, res) => {
+    try {
+        const { alertThreshold, defaultLimit2Digit, defaultLimit3DigitTode, defaultLimit3DigitTeng } = req.body;
+        await Settings.updateOne({ key: 'main' }, {
+            alertThreshold,
+            defaultLimit2Digit,
+            defaultLimit3DigitTode,
+            defaultLimit3DigitTeng
+        });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
 // ==================== 2-DIGIT API ====================
-app.get('/api/limits/2digit', (req, res) => {
-    const result = db.exec('SELECT * FROM limits_2digit ORDER BY number');
-    const data = {};
-    if (result.length > 0) {
-        result[0].values.forEach(row => {
-            data[row[0]] = { limit: row[1], amount: row[2] };
+app.get('/api/limits/2digit', async (req, res) => {
+    try {
+        const limits = await Limit2Digit.find().sort('number');
+        const data = {};
+        limits.forEach(l => {
+            data[l.number] = { limit: l.limit, amount: l.amount };
         });
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    res.json(data);
 });
 
-app.put('/api/limits/2digit/:number', (req, res) => {
-    const { limit, amount } = req.body;
-    const existing = db.exec('SELECT * FROM limits_2digit WHERE number = ?', [req.params.number]);
-    if (existing.length > 0 && existing[0].values.length > 0) {
-        db.run('UPDATE limits_2digit SET limit_amount = ?, amount = ? WHERE number = ?', [limit, amount, req.params.number]);
-    } else {
-        db.run('INSERT INTO limits_2digit (number, limit_amount, amount) VALUES (?, ?, ?)', [req.params.number, limit, amount]);
+app.put('/api/limits/2digit/:number', async (req, res) => {
+    try {
+        const { limit, amount } = req.body;
+        await Limit2Digit.updateOne(
+            { number: req.params.number },
+            { limit, amount },
+            { upsert: true }
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    saveDB();
-    res.json({ success: true });
 });
 
-app.put('/api/limits/2digit', (req, res) => {
-    const data = req.body;
-    for (const [number, info] of Object.entries(data)) {
-        db.run('INSERT OR REPLACE INTO limits_2digit (number, limit_amount, amount) VALUES (?, ?, ?)', [number, info.limit, info.amount]);
+app.put('/api/limits/2digit', async (req, res) => {
+    try {
+        const data = req.body;
+        const bulkOps = Object.entries(data).map(([number, info]) => ({
+            updateOne: {
+                filter: { number },
+                update: { limit: info.limit, amount: info.amount },
+                upsert: true
+            }
+        }));
+        await Limit2Digit.bulkWrite(bulkOps);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    saveDB();
-    res.json({ success: true });
 });
 
 // ==================== 3-DIGIT TODE API ====================
-app.get('/api/limits/3digit-tode', (req, res) => {
-    const result = db.exec('SELECT * FROM limits_3digit_tode ORDER BY number');
-    const data = {};
-    if (result.length > 0) {
-        result[0].values.forEach(row => {
-            data[row[0]] = { limit: row[1], amount: row[2] };
+app.get('/api/limits/3digit-tode', async (req, res) => {
+    try {
+        const limits = await Limit3DigitTode.find().sort('number');
+        const data = {};
+        limits.forEach(l => {
+            data[l.number] = { limit: l.limit, amount: l.amount };
         });
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    res.json(data);
 });
 
-app.put('/api/limits/3digit-tode/:number', (req, res) => {
-    const { limit, amount } = req.body;
-    const existing = db.exec('SELECT * FROM limits_3digit_tode WHERE number = ?', [req.params.number]);
-    if (existing.length > 0 && existing[0].values.length > 0) {
-        db.run('UPDATE limits_3digit_tode SET limit_amount = ?, amount = ? WHERE number = ?', [limit, amount, req.params.number]);
-    } else {
-        db.run('INSERT INTO limits_3digit_tode (number, limit_amount, amount) VALUES (?, ?, ?)', [req.params.number, limit, amount]);
+app.put('/api/limits/3digit-tode/:number', async (req, res) => {
+    try {
+        const { limit, amount } = req.body;
+        await Limit3DigitTode.updateOne(
+            { number: req.params.number },
+            { limit, amount },
+            { upsert: true }
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    saveDB();
-    res.json({ success: true });
 });
 
-app.delete('/api/limits/3digit-tode/:number', (req, res) => {
-    db.run('DELETE FROM limits_3digit_tode WHERE number = ?', [req.params.number]);
-    saveDB();
-    res.json({ success: true });
+app.delete('/api/limits/3digit-tode/:number', async (req, res) => {
+    try {
+        await Limit3DigitTode.deleteOne({ number: req.params.number });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
-app.put('/api/limits/3digit-tode', (req, res) => {
-    const data = req.body;
-    for (const [number, info] of Object.entries(data)) {
-        db.run('INSERT OR REPLACE INTO limits_3digit_tode (number, limit_amount, amount) VALUES (?, ?, ?)', [number, info.limit, info.amount]);
+app.put('/api/limits/3digit-tode', async (req, res) => {
+    try {
+        const data = req.body;
+        const bulkOps = Object.entries(data).map(([number, info]) => ({
+            updateOne: {
+                filter: { number },
+                update: { limit: info.limit, amount: info.amount },
+                upsert: true
+            }
+        }));
+        await Limit3DigitTode.bulkWrite(bulkOps);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    saveDB();
-    res.json({ success: true });
 });
 
 // ==================== 3-DIGIT TENG API ====================
-app.get('/api/limits/3digit-teng', (req, res) => {
-    const result = db.exec('SELECT * FROM limits_3digit_teng ORDER BY number');
-    const data = {};
-    if (result.length > 0) {
-        result[0].values.forEach(row => {
-            data[row[0]] = { limit: row[1], amount: row[2] };
+app.get('/api/limits/3digit-teng', async (req, res) => {
+    try {
+        const limits = await Limit3DigitTeng.find().sort('number');
+        const data = {};
+        limits.forEach(l => {
+            data[l.number] = { limit: l.limit, amount: l.amount };
         });
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    res.json(data);
 });
 
-app.put('/api/limits/3digit-teng/:number', (req, res) => {
-    const { limit, amount } = req.body;
-    const existing = db.exec('SELECT * FROM limits_3digit_teng WHERE number = ?', [req.params.number]);
-    if (existing.length > 0 && existing[0].values.length > 0) {
-        db.run('UPDATE limits_3digit_teng SET limit_amount = ?, amount = ? WHERE number = ?', [limit, amount, req.params.number]);
-    } else {
-        db.run('INSERT INTO limits_3digit_teng (number, limit_amount, amount) VALUES (?, ?, ?)', [req.params.number, limit, amount]);
+app.put('/api/limits/3digit-teng/:number', async (req, res) => {
+    try {
+        const { limit, amount } = req.body;
+        await Limit3DigitTeng.updateOne(
+            { number: req.params.number },
+            { limit, amount },
+            { upsert: true }
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    saveDB();
-    res.json({ success: true });
 });
 
-app.delete('/api/limits/3digit-teng/:number', (req, res) => {
-    db.run('DELETE FROM limits_3digit_teng WHERE number = ?', [req.params.number]);
-    saveDB();
-    res.json({ success: true });
+app.delete('/api/limits/3digit-teng/:number', async (req, res) => {
+    try {
+        await Limit3DigitTeng.deleteOne({ number: req.params.number });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
-app.put('/api/limits/3digit-teng', (req, res) => {
-    const data = req.body;
-    for (const [number, info] of Object.entries(data)) {
-        db.run('INSERT OR REPLACE INTO limits_3digit_teng (number, limit_amount, amount) VALUES (?, ?, ?)', [number, info.limit, info.amount]);
+app.put('/api/limits/3digit-teng', async (req, res) => {
+    try {
+        const data = req.body;
+        const bulkOps = Object.entries(data).map(([number, info]) => ({
+            updateOne: {
+                filter: { number },
+                update: { limit: info.limit, amount: info.amount },
+                upsert: true
+            }
+        }));
+        await Limit3DigitTeng.bulkWrite(bulkOps);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    saveDB();
-    res.json({ success: true });
 });
 
 // ==================== TRANSACTIONS API ====================
-app.get('/api/transactions', (req, res) => {
-    const result = db.exec('SELECT * FROM transactions ORDER BY date DESC');
-    const transactions = result.length > 0 ? result[0].values.map(row => ({
-        id: row[0],
-        date: row[1],
-        type: row[2],
-        number: row[3],
-        amount: row[4],
-        totalAmount: row[5],
-        limit: row[6]
-    })) : [];
-    res.json(transactions);
+app.get('/api/transactions', async (req, res) => {
+    try {
+        const transactions = await Transaction.find().sort({ date: -1 });
+        res.json(transactions.map(t => ({
+            id: t._id,
+            date: t.date,
+            type: t.type,
+            number: t.number,
+            amount: t.amount,
+            totalAmount: t.totalAmount,
+            limit: t.limit
+        })));
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
-app.post('/api/transactions', (req, res) => {
-    const { date, type, number, amount, totalAmount, limit } = req.body;
-    db.run('INSERT INTO transactions (date, type, number, amount, total_amount, limit_amount) VALUES (?, ?, ?, ?, ?, ?)', 
-        [date, type, number, amount, totalAmount, limit]);
-    saveDB();
-    const lastId = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-    res.json({ success: true, id: lastId });
+app.post('/api/transactions', async (req, res) => {
+    try {
+        const { date, type, number, amount, totalAmount, limit } = req.body;
+        const transaction = await Transaction.create({ date, type, number, amount, totalAmount, limit });
+        res.json({ success: true, id: transaction._id });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
-app.delete('/api/transactions/:id', (req, res) => {
-    db.run('DELETE FROM transactions WHERE id = ?', [req.params.id]);
-    saveDB();
-    res.json({ success: true });
+app.delete('/api/transactions/:id', async (req, res) => {
+    try {
+        await Transaction.deleteOne({ _id: req.params.id });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
-app.delete('/api/transactions', (req, res) => {
-    db.run('DELETE FROM transactions');
-    saveDB();
-    res.json({ success: true });
+app.delete('/api/transactions', async (req, res) => {
+    try {
+        await Transaction.deleteMany({});
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
 // ==================== EXPORT/IMPORT API ====================
-app.get('/api/export', (req, res) => {
-    const usersResult = db.exec('SELECT * FROM users');
-    const users = usersResult.length > 0 ? usersResult[0].values.map(r => ({ username: r[0], password: r[1], createdAt: r[2] })) : [];
-    
-    const settingsResult = db.exec('SELECT * FROM settings WHERE key = ?', ['main']);
-    const settings = settingsResult.length > 0 ? {
-        alertThreshold: settingsResult[0].values[0][1],
-        defaultLimit2Digit: settingsResult[0].values[0][2],
-        defaultLimit3DigitTode: settingsResult[0].values[0][3],
-        defaultLimit3DigitTeng: settingsResult[0].values[0][4]
-    } : {};
-    
-    const limits2Result = db.exec('SELECT * FROM limits_2digit');
-    const limits2digit = limits2Result.length > 0 ? limits2Result[0].values.map(r => ({ number: r[0], limit: r[1], amount: r[2] })) : [];
-    
-    const limits3TodeResult = db.exec('SELECT * FROM limits_3digit_tode');
-    const limits3digitTode = limits3TodeResult.length > 0 ? limits3TodeResult[0].values.map(r => ({ number: r[0], limit: r[1], amount: r[2] })) : [];
-    
-    const limits3TengResult = db.exec('SELECT * FROM limits_3digit_teng');
-    const limits3digitTeng = limits3TengResult.length > 0 ? limits3TengResult[0].values.map(r => ({ number: r[0], limit: r[1], amount: r[2] })) : [];
-    
-    const transResult = db.exec('SELECT * FROM transactions');
-    const transactions = transResult.length > 0 ? transResult[0].values.map(r => ({ 
-        id: r[0], date: r[1], type: r[2], number: r[3], amount: r[4], totalAmount: r[5], limit: r[6] 
-    })) : [];
-    
-    res.json({
-        users,
-        settings,
-        limits2digit,
-        limits3digitTode,
-        limits3digitTeng,
-        transactions,
-        exportDate: new Date().toISOString()
-    });
-});
-
-app.post('/api/import', (req, res) => {
-    const data = req.body;
+app.get('/api/export', async (req, res) => {
     try {
+        const users = await User.find();
+        const settings = await Settings.findOne({ key: 'main' });
+        const limits2digit = await Limit2Digit.find();
+        const limits3digitTode = await Limit3DigitTode.find();
+        const limits3digitTeng = await Limit3DigitTeng.find();
+        const transactions = await Transaction.find();
+
+        res.json({
+            users: users.map(u => ({ username: u.username, password: u.password, createdAt: u.createdAt })),
+            settings: settings ? {
+                alertThreshold: settings.alertThreshold,
+                defaultLimit2Digit: settings.defaultLimit2Digit,
+                defaultLimit3DigitTode: settings.defaultLimit3DigitTode,
+                defaultLimit3DigitTeng: settings.defaultLimit3DigitTeng
+            } : {},
+            limits2digit: limits2digit.map(l => ({ number: l.number, limit: l.limit, amount: l.amount })),
+            limits3digitTode: limits3digitTode.map(l => ({ number: l.number, limit: l.limit, amount: l.amount })),
+            limits3digitTeng: limits3digitTeng.map(l => ({ number: l.number, limit: l.limit, amount: l.amount })),
+            transactions: transactions.map(t => ({
+                id: t._id, date: t.date, type: t.type, number: t.number,
+                amount: t.amount, totalAmount: t.totalAmount, limit: t.limit
+            })),
+            exportDate: new Date().toISOString()
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+app.post('/api/import', async (req, res) => {
+    try {
+        const data = req.body;
+
         if (data.users) {
-            db.run('DELETE FROM users');
-            data.users.forEach(u => {
-                db.run('INSERT INTO users (username, password, created_at) VALUES (?, ?, ?)', [u.username, u.password, u.createdAt || new Date().toISOString()]);
-            });
+            await User.deleteMany({});
+            await User.insertMany(data.users.map(u => ({
+                username: u.username,
+                password: u.password,
+                createdAt: u.createdAt || new Date()
+            })));
         }
-        
+
         if (data.settings) {
-            db.run('UPDATE settings SET alert_threshold = ?, default_limit_2digit = ?, default_limit_3digit_tode = ?, default_limit_3digit_teng = ? WHERE key = ?',
-                [data.settings.alertThreshold, data.settings.defaultLimit2Digit, data.settings.defaultLimit3DigitTode, data.settings.defaultLimit3DigitTeng, 'main']);
+            await Settings.updateOne({ key: 'main' }, {
+                alertThreshold: data.settings.alertThreshold,
+                defaultLimit2Digit: data.settings.defaultLimit2Digit,
+                defaultLimit3DigitTode: data.settings.defaultLimit3DigitTode,
+                defaultLimit3DigitTeng: data.settings.defaultLimit3DigitTeng
+            });
         }
-        
+
         if (data.limits2digit) {
-            db.run('DELETE FROM limits_2digit');
-            data.limits2digit.forEach(i => {
-                db.run('INSERT INTO limits_2digit (number, limit_amount, amount) VALUES (?, ?, ?)', [i.number, i.limit, i.amount]);
-            });
+            await Limit2Digit.deleteMany({});
+            await Limit2Digit.insertMany(data.limits2digit);
         }
-        
+
         if (data.limits3digitTode) {
-            db.run('DELETE FROM limits_3digit_tode');
-            data.limits3digitTode.forEach(i => {
-                db.run('INSERT INTO limits_3digit_tode (number, limit_amount, amount) VALUES (?, ?, ?)', [i.number, i.limit, i.amount]);
-            });
+            await Limit3DigitTode.deleteMany({});
+            await Limit3DigitTode.insertMany(data.limits3digitTode);
         }
-        
+
         if (data.limits3digitTeng) {
-            db.run('DELETE FROM limits_3digit_teng');
-            data.limits3digitTeng.forEach(i => {
-                db.run('INSERT INTO limits_3digit_teng (number, limit_amount, amount) VALUES (?, ?, ?)', [i.number, i.limit, i.amount]);
-            });
+            await Limit3DigitTeng.deleteMany({});
+            await Limit3DigitTeng.insertMany(data.limits3digitTeng);
         }
-        
+
         if (data.transactions) {
-            db.run('DELETE FROM transactions');
-            data.transactions.forEach(t => {
-                db.run('INSERT INTO transactions (date, type, number, amount, total_amount, limit_amount) VALUES (?, ?, ?, ?, ?, ?)',
-                    [t.date, t.type, t.number, t.amount, t.totalAmount, t.limit]);
-            });
+            await Transaction.deleteMany({});
+            await Transaction.insertMany(data.transactions.map(t => ({
+                date: t.date, type: t.type, number: t.number,
+                amount: t.amount, totalAmount: t.totalAmount, limit: t.limit
+            })));
         }
-        
-        saveDB();
+
         res.json({ success: true });
-    } catch (e) {
-        res.json({ success: false, message: e.message });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
-app.post('/api/clear-amounts', (req, res) => {
-    db.run('UPDATE limits_2digit SET amount = 0');
-    db.run('UPDATE limits_3digit_tode SET amount = 0');
-    db.run('UPDATE limits_3digit_teng SET amount = 0');
-    saveDB();
-    res.json({ success: true });
+app.post('/api/clear-amounts', async (req, res) => {
+    try {
+        await Limit2Digit.updateMany({}, { amount: 0 });
+        await Limit3DigitTode.updateMany({}, { amount: 0 });
+        await Limit3DigitTeng.updateMany({}, { amount: 0 });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
-app.post('/api/clear-all', (req, res) => {
-    db.run('DELETE FROM limits_2digit');
-    db.run('DELETE FROM limits_3digit_tode');
-    db.run('DELETE FROM limits_3digit_teng');
-    db.run('DELETE FROM transactions');
-    for (let i = 0; i <= 99; i++) {
-        const num = i.toString().padStart(2, '0');
-        db.run('INSERT INTO limits_2digit (number, limit_amount, amount) VALUES (?, ?, ?)', [num, 5000, 0]);
+app.post('/api/clear-all', async (req, res) => {
+    try {
+        await Limit2Digit.deleteMany({});
+        await Limit3DigitTode.deleteMany({});
+        await Limit3DigitTeng.deleteMany({});
+        await Transaction.deleteMany({});
+
+        // Re-initialize 2-digit
+        const limits = [];
+        for (let i = 0; i <= 99; i++) {
+            const num = i.toString().padStart(2, '0');
+            limits.push({ number: num, limit: 5000, amount: 0 });
+        }
+        await Limit2Digit.insertMany(limits);
+
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
     }
-    saveDB();
-    res.json({ success: true });
 });
 
 // ==================== DATABASE INFO ====================
-app.get('/api/db-info', (req, res) => {
-    const info = {
-        type: 'SQLite (sql.js on Node.js)',
-        file: 'lottery.db',
-        tables: {}
-    };
-    info.tables.users = db.exec('SELECT COUNT(*) FROM users')[0]?.values[0][0] || 0;
-    info.tables.limits_2digit = db.exec('SELECT COUNT(*) FROM limits_2digit')[0]?.values[0][0] || 0;
-    info.tables.limits_3digit_tode = db.exec('SELECT COUNT(*) FROM limits_3digit_tode')[0]?.values[0][0] || 0;
-    info.tables.limits_3digit_teng = db.exec('SELECT COUNT(*) FROM limits_3digit_teng')[0]?.values[0][0] || 0;
-    info.tables.transactions = db.exec('SELECT COUNT(*) FROM transactions')[0]?.values[0][0] || 0;
-    res.json(info);
+app.get('/api/db-info', async (req, res) => {
+    try {
+        const info = {
+            type: 'MongoDB Atlas',
+            connected: mongoose.connection.readyState === 1,
+            tables: {
+                users: await User.countDocuments(),
+                limits_2digit: await Limit2Digit.countDocuments(),
+                limits_3digit_tode: await Limit3DigitTode.countDocuments(),
+                limits_3digit_teng: await Limit3DigitTeng.countDocuments(),
+                transactions: await Transaction.countDocuments()
+            }
+        };
+        res.json(info);
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
 // Start Server
@@ -509,7 +578,4 @@ initDatabase().then(() => {
         console.log(`Server running on port ${PORT}`);
         console.log(`Environment: ${FRONTEND_URL}`);
     });
-}).catch(err => {
-    console.error('Failed to initialize database:', err);
-    process.exit(1);
 });
