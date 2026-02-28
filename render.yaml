@@ -1,7 +1,7 @@
 # render.yaml - Render Blueprint
 services:
   - type: web
-    name: lottery-limit-api
+    name: testlotterrybackend
     env: node
     region: singapore
     plan: free
@@ -13,5 +13,7 @@ services:
         value: production
       - key: JWT_SECRET
         generateValue: true
+      - key: MONGODB_URI
+        sync: false
       - key: FRONTEND_URL
         sync: false
