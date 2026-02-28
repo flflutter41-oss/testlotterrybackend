@@ -8,7 +8,7 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://flflutter41_db_user:CMosnPj2lOZZGumb@testlotterry.uhfn3yq.mongodb.net/?appName=testlotterry';
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://testlotterry.netlify.app';
 
 // Trust proxy for Render (reverse proxy)
 app.set('trust proxy', 1);
@@ -75,6 +75,7 @@ const corsOptions = {
         'http://localhost:3000',
         'http://localhost:5500',
         'http://127.0.0.1:5500',
+        'https://testlotterry.netlify.app',
         'https://lottery-limit.netlify.app',
         /\.netlify\.app$/
     ],
